@@ -1,0 +1,439 @@
+--------------------------------------------------------------------------------
+-- Final Combined Script with Auto-Unload/Restore and Far Player Suspension
+-- Part 1: Three-Phase Unloading Script (Final Revised)
+-- Part 2: Moves palm tree objects to storage (for later restoration)
+-- Part 3: Unload far players (update loop) ONLY when the map is unloaded
+-- Part 4: After 5 seconds, restore the map and stop unloading far players
+--------------------------------------------------------------------------------
+
+local Players       = game:GetService("Players")
+local Workspace     = game:GetService("Workspace")
+local ServerStorage = game:GetService("ServerStorage")
+
+--------------------------------------------------------------------------------
+-- User-Configurable Parameters
+--------------------------------------------------------------------------------
+local SlabColor           = BrickColor.new("Bright green")
+local SlabMaterial        = Enum.Material.SmoothPlastic
+local DISTANCE_THRESHOLD  = 100  -- studs; players beyond this will be unloaded
+local UPDATE_INTERVAL     = 10   -- seconds between distance checks
+local WAIT_TIME           = 5    -- seconds to wait before restoring the map
+
+--------------------------------------------------------------------------------
+-- Global State: controls far-player unloading
+local mapUnloaded = false  -- true when MapOn() is active
+
+--------------------------------------------------------------------------------
+-- Safe-Find Utility
+--------------------------------------------------------------------------------
+local function safeFindChild(parent, childName)
+    if parent then
+        local child = parent:FindFirstChild(childName)
+        if not child then
+            warn("safeFindChild: '" .. childName .. "' not found under " .. parent:GetFullName())
+        end
+        return child
+    else
+        warn("safeFindChild: parent is nil when looking for '" .. childName .. "'")
+        return nil
+    end
+end
+
+--------------------------------------------------------------------------------
+-- Data Structures & Utility for Map Unloading
+--------------------------------------------------------------------------------
+local unloadedObjects = {}
+local expansionsFolder = nil
+
+local function getUnloadFolder()
+    local folder = ServerStorage:FindFirstChild("UnloadedMap")
+    if not folder then
+        folder = Instance.new("Folder")
+        folder.Name = "UnloadedMap"
+        folder.Parent = ServerStorage
+    end
+    return folder
+end
+
+local function moveToUnloadFolder(obj)
+    if not unloadedObjects[obj] then
+        unloadedObjects[obj] = obj.Parent
+    end
+    obj.Parent = getUnloadFolder()
+end
+
+local function restoreAllUnloaded()
+    local unloadFolder = getUnloadFolder()
+    for obj, originalParent in pairs(unloadedObjects) do
+        if obj and obj.Parent == unloadFolder then
+            obj.Parent = originalParent
+        end
+    end
+    unloadedObjects = {}
+end
+
+--------------------------------------------------------------------------------
+-- Utility: does a string contain any of these substrings? (case-insensitive)
+--------------------------------------------------------------------------------
+local function nameContainsAny(str, substrings)
+    for _, sub in ipairs(substrings) do
+        if string.find(str:lower(), sub:lower()) then
+            return true
+        end
+    end
+    return false
+end
+
+--------------------------------------------------------------------------------
+-- Force Preservation: "Holder" folder or anything inside it
+--------------------------------------------------------------------------------
+local function isInHolder(obj)
+    local current = obj
+    while current do
+        if current.Name == "Holder" then
+            return true
+        end
+        current = current.Parent
+    end
+    return false
+end
+
+--------------------------------------------------------------------------------
+-- Ball-related items to preserve
+--------------------------------------------------------------------------------
+local ballPreserveKeywords = {
+    "ClientBall", "Ball", "Balls", "Trail", "HandleBall", "Launcher",
+    "Racket", "Effects", "Effects Ball", "Clothing", "Practice",
+    "BallOutline", "Attachment",  -- preserves ball attachments
+    "GetFastCastParams", "FastCastParams",
+}
+
+local function shouldPreserveForBall(obj)
+    local current = obj
+    while current do
+        if nameContainsAny(current.Name, ballPreserveKeywords) then
+            return true
+        end
+        current = current.Parent
+    end
+    return false
+end
+
+--------------------------------------------------------------------------------
+-- Exclude geometry classes in Phase 2 only
+--------------------------------------------------------------------------------
+local geometryClasses = {
+    "Part", "WedgePart", "CornerWedgePart", "TrussPart",
+    "MeshPart", "TrianglePart",
+}
+
+local function isGeometry(obj)
+    for _, className in ipairs(geometryClasses) do
+        if obj:IsA(className) then
+            return true
+        end
+    end
+    return false
+end
+
+--------------------------------------------------------------------------------
+-- Find any player's HRP for bounding box checks
+--------------------------------------------------------------------------------
+local function getAnyPlayerHRP()
+    for _, plr in pairs(Players:GetPlayers()) do
+        local char = plr.Character
+        if char then
+            local hrp = safeFindChild(char, "HumanoidRootPart")
+            if hrp then
+                return hrp
+            end
+        end
+    end
+    return nil
+end
+
+--------------------------------------------------------------------------------
+-- Check if HRP is inside a court's bounding box
+--------------------------------------------------------------------------------
+local function isPlayerInsideCourt(courtModel, hrpPosition)
+    if not courtModel:IsA("Model") then
+        return false
+    end
+    local cf, size = courtModel:GetBoundingBox()
+    if not cf or not size then
+        return false
+    end
+    local localPos = cf:PointToObjectSpace(hrpPosition)
+    local halfX = size.X / 2
+    local halfY = size.Y / 2
+    local halfZ = size.Z / 2
+    return (math.abs(localPos.X) <= halfX and math.abs(localPos.Y) <= halfY and math.abs(localPos.Z) <= halfZ)
+end
+
+--------------------------------------------------------------------------------
+-- Determine which court the first player is standing on
+--------------------------------------------------------------------------------
+local function findCourtPlayerIsStandingOn()
+    local hrp = getAnyPlayerHRP()
+    if not hrp then
+        warn("No player's HumanoidRootPart found!")
+        return nil
+    end
+    local courtsFolder = safeFindChild(Workspace, "Courts")
+    if not courtsFolder then
+        warn("No 'Courts' folder found in Workspace!")
+        return nil
+    end
+    for _, court in ipairs(courtsFolder:GetChildren()) do
+        if isPlayerInsideCourt(court, hrp.Position) then
+            return court
+        end
+    end
+    return nil
+end
+
+--------------------------------------------------------------------------------
+-- PHASE 1: Unload top-level objects (except terrain, players, cameras, Holder,
+-- ball items, courts, and CourtAreas)
+--------------------------------------------------------------------------------
+local function phase1Unload()
+    for _, child in ipairs(Workspace:GetChildren()) do
+        if child:IsA("Terrain") then
+            -- Keep Terrain
+        elseif isInHolder(child) then
+            -- Keep anything in "Holder"
+        elseif Players:GetPlayerFromCharacter(child) then
+            -- Keep player characters
+        elseif child:IsA("Camera") then
+            -- Keep Cameras
+        elseif shouldPreserveForBall(child) then
+            -- Keep ball-related items
+        elseif child.Name == "Courts" or child.Name == "CourtAreas" then
+            -- Keep courts
+        else
+            moveToUnloadFolder(child)
+        end
+    end
+end
+
+--------------------------------------------------------------------------------
+-- PHASE 2: Unload leftover geometry (non-ball) in Workspace
+--------------------------------------------------------------------------------
+local function phase2UnloadGeometry()
+    for _, child in ipairs(Workspace:GetChildren()) do
+        if not child:IsA("Terrain") and isGeometry(child) then
+            if isInHolder(child) then
+                -- skip
+            elseif shouldPreserveForBall(child) then
+                -- skip
+            else
+                moveToUnloadFolder(child)
+            end
+        end
+    end
+end
+
+--------------------------------------------------------------------------------
+-- PHASE 3: Keep only the single court the player is on; unload the others.
+-- Also unload all BaseParts in CourtAreas.
+--------------------------------------------------------------------------------
+local function phase3UnloadAllButOne(myCourt)
+    local courtsFolder = safeFindChild(Workspace, "Courts")
+    if courtsFolder then
+        for _, court in ipairs(courtsFolder:GetChildren()) do
+            if court ~= myCourt then
+                moveToUnloadFolder(court)
+            end
+        end
+    end
+    local courtAreasFolder = safeFindChild(Workspace, "CourtAreas")
+    if courtAreasFolder then
+        for _, areaPart in ipairs(courtAreasFolder:GetDescendants()) do
+            if areaPart:IsA("BasePart") then
+                moveToUnloadFolder(areaPart)
+            end
+        end
+    end
+end
+
+--------------------------------------------------------------------------------
+-- Add expansions around a court
+--------------------------------------------------------------------------------
+local function addCourtExtensions(court)
+    local cf, size = court:GetBoundingBox()
+    if not cf or not size then
+        warn("[EXTENSIONS] No bounding box for court!")
+        return
+    end
+    local MANUAL_SLAB_Y = -9.5
+    local halfCourtX = 64.95 / 2
+    local halfCourtZ = 93 / 2
+    local leftRightSize = Vector3.new(21, 1.4, 93)
+    local frontBackSize = Vector3.new(64.95, 1.4, 21)
+    local cornerSize    = Vector3.new(21, 1.4, 21)
+    local expansionsInfo = {
+        { name = "LeftFloor",       size = leftRightSize, offset = Vector3.new(-(halfCourtX + leftRightSize.X/2), MANUAL_SLAB_Y, 0) },
+        { name = "RightFloor",      size = leftRightSize, offset = Vector3.new( halfCourtX + leftRightSize.X/2,  MANUAL_SLAB_Y, 0) },
+        { name = "FrontFloor",      size = frontBackSize, offset = Vector3.new(0, MANUAL_SLAB_Y,  halfCourtZ + frontBackSize.Z/2) },
+        { name = "BackFloor",       size = frontBackSize, offset = Vector3.new(0, MANUAL_SLAB_Y, -(halfCourtZ + frontBackSize.Z/2)) },
+        { name = "FrontLeftCorner", size = cornerSize,    offset = Vector3.new(-(halfCourtX + cornerSize.X/2),  MANUAL_SLAB_Y,  halfCourtZ + cornerSize.Z/2) },
+        { name = "FrontRightCorner",size = cornerSize,    offset = Vector3.new( halfCourtX + cornerSize.X/2,    MANUAL_SLAB_Y,  halfCourtZ + cornerSize.Z/2) },
+        { name = "BackLeftCorner",  size = cornerSize,    offset = Vector3.new(-(halfCourtX + cornerSize.X/2),  MANUAL_SLAB_Y, -(halfCourtZ + cornerSize.Z/2)) },
+        { name = "BackRightCorner", size = cornerSize,    offset = Vector3.new( halfCourtX + cornerSize.X/2,    MANUAL_SLAB_Y, -(halfCourtZ + cornerSize.Z/2)) },
+    }
+    local expFolder = safeFindChild(court, "Expansions")
+    if expFolder then
+        expFolder:Destroy()
+    end
+    expansionsFolder = Instance.new("Folder")
+    expansionsFolder.Name = "Expansions"
+    expansionsFolder.Parent = court
+    for _, info in ipairs(expansionsInfo) do
+        local part = Instance.new("Part")
+        part.Name       = info.name
+        part.Size       = info.size
+        part.Anchored   = true
+        part.CanCollide = true
+        part.Material   = SlabMaterial
+        part.BrickColor = SlabColor
+        part.CFrame     = cf * CFrame.new(info.offset)
+        part.Parent     = expansionsFolder
+    end
+end
+
+--------------------------------------------------------------------------------
+-- PUBLIC: MapOn & MapOff for Map Unloading/Restoration (Part 1)
+--------------------------------------------------------------------------------
+local function MapOn()
+    print("[MapOn] Starting unload phases...")
+    phase1Unload()
+    phase2UnloadGeometry()
+    local myCourt = findCourtPlayerIsStandingOn()
+    phase3UnloadAllButOne(myCourt)
+    if myCourt and myCourt:IsDescendantOf(Workspace) then
+        addCourtExtensions(myCourt)
+        print("[MapOn] Done. Kept court:", myCourt.Name)
+    else
+        warn("[MapOn] No valid court found (no players or no bounding box?). All courts unloaded.")
+    end
+    mapUnloaded = true
+end
+
+local function MapOff()
+    print("[MapOff] Restoring unloaded objects...")
+    restoreAllUnloaded()
+    if expansionsFolder and expansionsFolder.Parent then
+        expansionsFolder:Destroy()
+        expansionsFolder = nil
+    end
+    mapUnloaded = false
+    print("[MapOff] Done. Map restored.")
+end
+
+_G.MapOn = MapOn
+_G.MapOff = MapOff
+
+print("[ServerScript] MapOn() and MapOff() are now available in the command bar.")
+
+-- Run the unload phases first.
+MapOn()
+
+--------------------------------------------------------------------------------
+-- PART 2: Debug Script - Only Delete Palm Trees
+-- This code runs AFTER the unload phases.
+--------------------------------------------------------------------------------
+local deletedPalmTrees = {}  -- store palm trees and their original parents
+
+local function movePalmTreesToStorage()
+    local storageFolder = ServerStorage:FindFirstChild("DeletedPalmTrees")
+    if not storageFolder then
+        storageFolder = Instance.new("Folder")
+        storageFolder.Name = "DeletedPalmTrees"
+        storageFolder.Parent = ServerStorage
+    end
+    for _, obj in ipairs(Workspace:GetDescendants()) do
+        local nameLower = obj.Name:lower()
+        if nameLower:find("palm") and not shouldPreserveForBall(obj) then
+            print("[Debug] Moving palm tree object to storage:", obj:GetFullName())
+            deletedPalmTrees[obj] = obj.Parent
+            obj.Parent = storageFolder
+        end
+    end
+    print("[Debug] Finished moving palm trees to storage.")
+end
+
+movePalmTreesToStorage()
+
+--------------------------------------------------------------------------------
+-- PART 3: Debug Script - Unload (Destroy) Players Whose Characters Are
+-- Not Within a Certain Distance of the Reference HRP
+-- This update loop only runs while the map is unloaded.
+--------------------------------------------------------------------------------
+local DISTANCE_THRESHOLD = 100  -- adjust as needed
+local UPDATE_INTERVAL = 10      -- update every 10 seconds
+
+local function getReferenceHRP()
+    for _, plr in pairs(Players:GetPlayers()) do
+        if plr.Character then
+            local hrp = plr.Character:FindFirstChild("HumanoidRootPart")
+            if hrp then
+                return hrp
+            end
+        end
+    end
+    return nil
+end
+
+local function unloadFarPlayers(threshold)
+    local refHRP = getReferenceHRP()
+    if not refHRP then
+        warn("No reference HRP found; cannot unload far players.")
+        return
+    end
+    for _, plr in pairs(Players:GetPlayers()) do
+        if plr.Character then
+            local hrp = plr.Character:FindFirstChild("HumanoidRootPart")
+            if hrp then
+                local dist = (hrp.Position - refHRP.Position).Magnitude
+                if dist > threshold then
+                    print("[Debug] Unloading player", plr.Name, "with distance", dist)
+                    plr.Character:Destroy()
+                end
+            end
+        end
+    end
+end
+
+spawn(function()
+    while true do
+        if mapUnloaded then
+            unloadFarPlayers(DISTANCE_THRESHOLD)
+        end
+        wait(UPDATE_INTERVAL)
+    end
+end)
+
+--------------------------------------------------------------------------------
+-- PART 4: Auto-Restore Cycle
+-- After WAIT_TIME seconds, restore the map.
+--------------------------------------------------------------------------------
+wait(WAIT_TIME)
+print("[Debug] Restoring map...")
+MapOff()
+
+-- Restore palm trees.
+local function restorePalmTrees()
+    local storageFolder = ServerStorage:FindFirstChild("DeletedPalmTrees")
+    if storageFolder then
+        for obj, originalParent in pairs(deletedPalmTrees) do
+            if obj and obj.Parent == storageFolder then
+                print("[Debug] Restoring palm tree object:", obj:GetFullName())
+                obj.Parent = originalParent
+            end
+        end
+        deletedPalmTrees = {}
+    end
+end
+restorePalmTrees()
+
+print("[Debug] Map restoration complete.")

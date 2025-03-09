@@ -1,9 +1,8 @@
 --------------------------------------------------------------------------------
--- Final Combined Script with Auto-Unload/Restore and Far Player Suspension
--- Part 1: Three-Phase Unloading Script (Final Revised)
--- Part 2: Moves palm tree objects to storage (for later restoration)
--- Part 3: Unload far players (update loop) ONLY when the map is unloaded
--- Part 4: After 5 seconds, restore the map and stop unloading far players
+-- Final Combined Script with Manual MapOn/MapOff, Far Player Suspension,
+-- and Slab Colour Customization
+-- Modified: Auto-restore cycle removed. MapOn/MapOff now work any number of times.
+-- Also, expansion parts (green slabs and corners) are stored for individual access.
 --------------------------------------------------------------------------------
 
 local Players       = game:GetService("Players")
@@ -13,15 +12,17 @@ local ServerStorage = game:GetService("ServerStorage")
 --------------------------------------------------------------------------------
 -- User-Configurable Parameters
 --------------------------------------------------------------------------------
-local SlabColor           = BrickColor.new("Bright green")
+local SlabColor           = BrickColor.new("Black")  -- Change this value to set the slab color initially
 local SlabMaterial        = Enum.Material.SmoothPlastic
 local DISTANCE_THRESHOLD  = 100  -- studs; players beyond this will be unloaded
 local UPDATE_INTERVAL     = 10   -- seconds between distance checks
-local WAIT_TIME           = 5    -- seconds to wait before restoring the map
 
 --------------------------------------------------------------------------------
 -- Global State: controls far-player unloading
 local mapUnloaded = false  -- true when MapOn() is active
+
+-- Global table to hold expansion parts for manual repositioning
+_G.expansionParts = {}
 
 --------------------------------------------------------------------------------
 -- Safe-Find Utility
@@ -43,7 +44,6 @@ end
 -- Data Structures & Utility for Map Unloading
 --------------------------------------------------------------------------------
 local unloadedObjects = {}
-local expansionsFolder = nil
 
 local function getUnloadFolder()
     local folder = ServerStorage:FindFirstChild("UnloadedMap")
@@ -64,12 +64,20 @@ end
 
 local function restoreAllUnloaded()
     local unloadFolder = getUnloadFolder()
+    -- Iterate our stored mapping first.
     for obj, originalParent in pairs(unloadedObjects) do
         if obj and obj.Parent == unloadFolder then
+            print("[Debug] Restoring:", obj:GetFullName(), "to", originalParent and originalParent:GetFullName() or "nil")
             obj.Parent = originalParent
         end
     end
     unloadedObjects = {}
+    
+    -- Then, check for any remaining objects in UnloadedMap and move them to Workspace.
+    for _, obj in ipairs(unloadFolder:GetChildren()) do
+        print("[Debug] Additional object in UnloadedMap:", obj:GetFullName(), "moving back to Workspace")
+        obj.Parent = Workspace
+    end
 end
 
 --------------------------------------------------------------------------------
@@ -258,6 +266,7 @@ end
 
 --------------------------------------------------------------------------------
 -- Add expansions around a court
+-- Also, store each created expansion part in _G.expansionParts for individual control.
 --------------------------------------------------------------------------------
 local function addCourtExtensions(court)
     local cf, size = court:GetBoundingBox()
@@ -268,26 +277,28 @@ local function addCourtExtensions(court)
     local MANUAL_SLAB_Y = -9.5
     local halfCourtX = 64.95 / 2
     local halfCourtZ = 93 / 2
-    local leftRightSize = Vector3.new(21, 1.4, 93)
-    local frontBackSize = Vector3.new(64.95, 1.4, 21)
+    local leftRightSize = Vector3.new(35, 1.4, 93)
+    local frontSize = Vector3.new(135, 1.4, 80)  -- Change this value for the front slab
+    local backSize = Vector3.new(135, 1.4, 70)   -- Change this value for the back slab
+
     local cornerSize    = Vector3.new(21, 1.4, 21)
     local expansionsInfo = {
-        { name = "LeftFloor",       size = leftRightSize, offset = Vector3.new(-(halfCourtX + leftRightSize.X/2), MANUAL_SLAB_Y, 0) },
-        { name = "RightFloor",      size = leftRightSize, offset = Vector3.new( halfCourtX + leftRightSize.X/2,  MANUAL_SLAB_Y, 0) },
-        { name = "FrontFloor",      size = frontBackSize, offset = Vector3.new(0, MANUAL_SLAB_Y,  halfCourtZ + frontBackSize.Z/2) },
-        { name = "BackFloor",       size = frontBackSize, offset = Vector3.new(0, MANUAL_SLAB_Y, -(halfCourtZ + frontBackSize.Z/2)) },
-        { name = "FrontLeftCorner", size = cornerSize,    offset = Vector3.new(-(halfCourtX + cornerSize.X/2),  MANUAL_SLAB_Y,  halfCourtZ + cornerSize.Z/2) },
-        { name = "FrontRightCorner",size = cornerSize,    offset = Vector3.new( halfCourtX + cornerSize.X/2,    MANUAL_SLAB_Y,  halfCourtZ + cornerSize.Z/2) },
-        { name = "BackLeftCorner",  size = cornerSize,    offset = Vector3.new(-(halfCourtX + cornerSize.X/2),  MANUAL_SLAB_Y, -(halfCourtZ + cornerSize.Z/2)) },
-        { name = "BackRightCorner", size = cornerSize,    offset = Vector3.new( halfCourtX + cornerSize.X/2,    MANUAL_SLAB_Y, -(halfCourtZ + cornerSize.Z/2)) },
+        { name = "LeftFloor",  size = leftRightSize, offset = Vector3.new(-(halfCourtX + leftRightSize.X/2), MANUAL_SLAB_Y, 0) },
+        { name = "RightFloor", size = leftRightSize, offset = Vector3.new( halfCourtX + leftRightSize.X/2, MANUAL_SLAB_Y, 0) },
+        { name = "FrontFloor", size = frontSize,     offset = Vector3.new(0, MANUAL_SLAB_Y,  halfCourtZ + frontSize.Z/2 - 6) },
+        { name = "BackFloor",  size = backSize,      offset = Vector3.new(0, MANUAL_SLAB_Y, -(halfCourtZ + backSize.Z/2 - 8)) },
     }
     local expFolder = safeFindChild(court, "Expansions")
     if expFolder then
         expFolder:Destroy()
     end
-    expansionsFolder = Instance.new("Folder")
+    local expansionsFolder = Instance.new("Folder")
     expansionsFolder.Name = "Expansions"
     expansionsFolder.Parent = court
+
+    -- Clear previous expansion parts references
+    _G.expansionParts = {}
+
     for _, info in ipairs(expansionsInfo) do
         local part = Instance.new("Part")
         part.Name       = info.name
@@ -298,49 +309,15 @@ local function addCourtExtensions(court)
         part.BrickColor = SlabColor
         part.CFrame     = cf * CFrame.new(info.offset)
         part.Parent     = expansionsFolder
+
+        -- Store for manual adjustments later.
+        _G.expansionParts[info.name] = part
     end
 end
 
 --------------------------------------------------------------------------------
--- PUBLIC: MapOn & MapOff for Map Unloading/Restoration (Part 1)
---------------------------------------------------------------------------------
-local function MapOn()
-    print("[MapOn] Starting unload phases...")
-    phase1Unload()
-    phase2UnloadGeometry()
-    local myCourt = findCourtPlayerIsStandingOn()
-    phase3UnloadAllButOne(myCourt)
-    if myCourt and myCourt:IsDescendantOf(Workspace) then
-        addCourtExtensions(myCourt)
-        print("[MapOn] Done. Kept court:", myCourt.Name)
-    else
-        warn("[MapOn] No valid court found (no players or no bounding box?). All courts unloaded.")
-    end
-    mapUnloaded = true
-end
-
-local function MapOff()
-    print("[MapOff] Restoring unloaded objects...")
-    restoreAllUnloaded()
-    if expansionsFolder and expansionsFolder.Parent then
-        expansionsFolder:Destroy()
-        expansionsFolder = nil
-    end
-    mapUnloaded = false
-    print("[MapOff] Done. Map restored.")
-end
-
-_G.MapOn = MapOn
-_G.MapOff = MapOff
-
-print("[ServerScript] MapOn() and MapOff() are now available in the command bar.")
-
--- Run the unload phases first.
-MapOn()
-
---------------------------------------------------------------------------------
--- PART 2: Debug Script - Only Delete Palm Trees
--- This code runs AFTER the unload phases.
+-- Palm Tree Management (Debug Script - Part 2)
+-- Moves palm tree objects to storage for later restoration.
 --------------------------------------------------------------------------------
 local deletedPalmTrees = {}  -- store palm trees and their original parents
 
@@ -365,13 +342,9 @@ end
 movePalmTreesToStorage()
 
 --------------------------------------------------------------------------------
--- PART 3: Debug Script - Unload (Destroy) Players Whose Characters Are
--- Not Within a Certain Distance of the Reference HRP
--- This update loop only runs while the map is unloaded.
+-- Debug Script - Unload (Destroy) Players Whose Characters Are
+-- Not Within a Certain Distance of the Reference HRP (Part 3)
 --------------------------------------------------------------------------------
-local DISTANCE_THRESHOLD = 100  -- adjust as needed
-local UPDATE_INTERVAL = 10      -- update every 10 seconds
-
 local function getReferenceHRP()
     for _, plr in pairs(Players:GetPlayers()) do
         if plr.Character then
@@ -414,14 +387,8 @@ spawn(function()
 end)
 
 --------------------------------------------------------------------------------
--- PART 4: Auto-Restore Cycle
--- After WAIT_TIME seconds, restore the map.
+-- Palm Trees Restore Utility
 --------------------------------------------------------------------------------
-wait(WAIT_TIME)
-print("[Debug] Restoring map...")
-MapOff()
-
--- Restore palm trees.
 local function restorePalmTrees()
     local storageFolder = ServerStorage:FindFirstChild("DeletedPalmTrees")
     if storageFolder then
@@ -434,6 +401,67 @@ local function restorePalmTrees()
         deletedPalmTrees = {}
     end
 end
-restorePalmTrees()
 
-print("[Debug] Map restoration complete.")
+--------------------------------------------------------------------------------
+-- PUBLIC: MapOn & MapOff for Map Unloading/Restoration
+--------------------------------------------------------------------------------
+local function MapOn()
+    if mapUnloaded then
+        print("[MapOn] Map is already unloaded.")
+        return
+    end
+    print("[MapOn] Starting unload phases...")
+    phase1Unload()
+    phase2UnloadGeometry()
+    local myCourt = findCourtPlayerIsStandingOn()
+    phase3UnloadAllButOne(myCourt)
+    if myCourt and myCourt:IsDescendantOf(Workspace) then
+        addCourtExtensions(myCourt)
+        print("[MapOn] Done. Kept court:", myCourt.Name)
+    else
+        warn("[MapOn] No valid court found (no players or no bounding box?). All courts unloaded.")
+    end
+    mapUnloaded = true
+end
+
+local function MapOff()
+    print("[MapOff] Restoring unloaded objects...")
+    restoreAllUnloaded()
+    restorePalmTrees()
+    
+    -- Remove any Expansions folders from all courts.
+    local courtsFolder = safeFindChild(Workspace, "Courts")
+    if courtsFolder then
+        for _, court in ipairs(courtsFolder:GetChildren()) do
+            local expFolder = court:FindFirstChild("Expansions")
+            if expFolder then
+                expFolder:Destroy()
+                print("[Debug] Removed Expansions from court:", court.Name)
+            end
+        end
+    end
+    
+    mapUnloaded = false
+    print("[MapOff] Done. Map restored.")
+end
+
+_G.MapOn = MapOn
+_G.MapOff = MapOff
+
+--------------------------------------------------------------------------------
+-- PUBLIC: UpdateSlabColor allows you to change the colour of the slabs at runtime.
+--------------------------------------------------------------------------------
+local function UpdateSlabColor(newColor)
+    SlabColor = BrickColor.new(newColor)
+    for _, part in pairs(_G.expansionParts) do
+        part.BrickColor = SlabColor
+    end
+    print("[Debug] Updated slab color to", newColor)
+end
+
+_G.UpdateSlabColor = UpdateSlabColor
+
+print("[ServerScript] MapOn(), MapOff(), and UpdateSlabColor() are now available in the command bar.")
+
+-- Run the unload phases initially.
+MapOn()

@@ -67,7 +67,6 @@ local function restoreAllUnloaded()
     -- Iterate our stored mapping first.
     for obj, originalParent in pairs(unloadedObjects) do
         if obj and obj.Parent == unloadFolder then
-            print("[Debug] Restoring:", obj:GetFullName(), "to", originalParent and originalParent:GetFullName() or "nil")
             obj.Parent = originalParent
         end
     end
@@ -75,7 +74,6 @@ local function restoreAllUnloaded()
     
     -- Then, check for any remaining objects in UnloadedMap and move them to Workspace.
     for _, obj in ipairs(unloadFolder:GetChildren()) do
-        print("[Debug] Additional object in UnloadedMap:", obj:GetFullName(), "moving back to Workspace")
         obj.Parent = Workspace
     end
 end
@@ -331,12 +329,10 @@ local function movePalmTreesToStorage()
     for _, obj in ipairs(Workspace:GetDescendants()) do
         local nameLower = obj.Name:lower()
         if nameLower:find("palm") and not shouldPreserveForBall(obj) then
-            print("[Debug] Moving palm tree object to storage:", obj:GetFullName())
             deletedPalmTrees[obj] = obj.Parent
             obj.Parent = storageFolder
         end
     end
-    print("[Debug] Finished moving palm trees to storage.")
 end
 
 movePalmTreesToStorage()
@@ -369,7 +365,6 @@ local function unloadFarPlayers(threshold)
             if hrp then
                 local dist = (hrp.Position - refHRP.Position).Magnitude
                 if dist > threshold then
-                    print("[Debug] Unloading player", plr.Name, "with distance", dist)
                     plr.Character:Destroy()
                 end
             end
@@ -394,7 +389,6 @@ local function restorePalmTrees()
     if storageFolder then
         for obj, originalParent in pairs(deletedPalmTrees) do
             if obj and obj.Parent == storageFolder then
-                print("[Debug] Restoring palm tree object:", obj:GetFullName())
                 obj.Parent = originalParent
             end
         end
@@ -407,17 +401,14 @@ end
 --------------------------------------------------------------------------------
 local function MapOn()
     if mapUnloaded then
-        print("[MapOn] Map is already unloaded.")
         return
     end
-    print("[MapOn] Starting unload phases...")
     phase1Unload()
     phase2UnloadGeometry()
     local myCourt = findCourtPlayerIsStandingOn()
     phase3UnloadAllButOne(myCourt)
     if myCourt and myCourt:IsDescendantOf(Workspace) then
         addCourtExtensions(myCourt)
-        print("[MapOn] Done. Kept court:", myCourt.Name)
     else
         warn("[MapOn] No valid court found (no players or no bounding box?). All courts unloaded.")
     end
@@ -425,7 +416,6 @@ local function MapOn()
 end
 
 local function MapOff()
-    print("[MapOff] Restoring unloaded objects...")
     restoreAllUnloaded()
     restorePalmTrees()
     
@@ -436,13 +426,11 @@ local function MapOff()
             local expFolder = court:FindFirstChild("Expansions")
             if expFolder then
                 expFolder:Destroy()
-                print("[Debug] Removed Expansions from court:", court.Name)
             end
         end
     end
     
     mapUnloaded = false
-    print("[MapOff] Done. Map restored.")
 end
 
 _G.MapOn = MapOn
@@ -456,12 +444,9 @@ local function UpdateSlabColor(newColor)
     for _, part in pairs(_G.expansionParts) do
         part.BrickColor = SlabColor
     end
-    print("[Debug] Updated slab color to", newColor)
 end
 
 _G.UpdateSlabColor = UpdateSlabColor
-
-print("[ServerScript] MapOn(), MapOff(), and UpdateSlabColor() are now available in the command bar.")
 
 -- Run the unload phases initially.
 MapOn()

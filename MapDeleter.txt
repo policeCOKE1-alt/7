@@ -15,6 +15,10 @@ local ServerStorage = game:GetService("ServerStorage")
 local SlabColor           = BrickColor.new("Black")  -- Change this value to set the slab color initially
 local SlabMaterial        = Enum.Material.SmoothPlastic
 
+-- Parameters for player-hiding loop:
+local DISTANCE_THRESHOLD = 500  -- Hide players whose characters are more than 500 studs away.
+local UPDATE_INTERVAL    = 5    -- Check every 5 seconds.
+
 --------------------------------------------------------------------------------
 -- Global State: controls far-player unloading
 local mapUnloaded = false  -- true when MapOn() is active

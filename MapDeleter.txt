@@ -484,4 +484,4 @@ end
 _G.UpdateSlabColor = UpdateSlabColor
 
 -- Run the unload phases initially.
-MapOff()
+MapOn()

@@ -1,6 +1,6 @@
 --------------------------------------------------------------------------------
 -- Final Combined Script with Manual MapOn/MapOff, Far Player Suspension,
--- Slab Colour Customization, Walls Preservation, and Revised Player Hiding
+-- Slab Colour Customization, and Walls Preservation
 -- Modified: Auto-restore cycle removed. MapOn/MapOff now work any number of times.
 -- Also, expansion parts (green slabs and corners) are stored for individual access.
 --------------------------------------------------------------------------------
@@ -14,10 +14,6 @@ local ServerStorage = game:GetService("ServerStorage")
 --------------------------------------------------------------------------------
 local SlabColor           = BrickColor.new("Black")  -- Change this value to set the slab color initially
 local SlabMaterial        = Enum.Material.SmoothPlastic
-
--- Parameters for player-hiding loop:
-local DISTANCE_THRESHOLD = 500  -- Hide players whose characters are more than 500 studs away.
-local UPDATE_INTERVAL    = 5    -- Check every 5 seconds.
 
 --------------------------------------------------------------------------------
 -- Global State: controls far-player unloading
@@ -344,21 +340,8 @@ end
 movePalmTreesToStorage()
 
 --------------------------------------------------------------------------------
--- Utility: Get (or create) HiddenPlayers folder for player characters
---------------------------------------------------------------------------------
-local function getHiddenPlayersFolder()
-    local folder = ServerStorage:FindFirstChild("HiddenPlayers")
-    if not folder then
-        folder = Instance.new("Folder")
-        folder.Name = "HiddenPlayers"
-        folder.Parent = ServerStorage
-    end
-    return folder
-end
-
---------------------------------------------------------------------------------
--- Revised: Hide Players Whose Characters Are Not Within a Certain Distance
--- This loop will only run while the map is on.
+-- Debug Script - Unload (Destroy) Players Whose Characters Are
+-- Not Within a Certain Distance of the Reference HRP (Part 3)
 --------------------------------------------------------------------------------
 local function getReferenceHRP()
     for _, plr in pairs(Players:GetPlayers()) do
@@ -375,47 +358,30 @@ end
 local function unloadFarPlayers(threshold)
     local refHRP = getReferenceHRP()
     if not refHRP then
-        warn("No reference HRP found; cannot hide far players.")
+        warn("No reference HRP found; cannot unload far players.")
         return
     end
-    local hiddenFolder = getHiddenPlayersFolder()
     for _, plr in pairs(Players:GetPlayers()) do
         if plr.Character then
             local hrp = plr.Character:FindFirstChild("HumanoidRootPart")
             if hrp then
                 local dist = (hrp.Position - refHRP.Position).Magnitude
                 if dist > threshold then
-                    -- Only move if not already hidden
-                    if plr.Character.Parent ~= hiddenFolder then
-                        plr.Character.Parent = hiddenFolder
-                    end
+                    plr.Character:Destroy()
                 end
             end
         end
     end
 end
 
--- Instead of a continuously running loop, we start the player-hiding task only when the map is on.
-local function startPlayerHidingLoop()
-    spawn(function()
-        while mapUnloaded do
+spawn(function()
+    while true do
+        if mapUnloaded then
             unloadFarPlayers(DISTANCE_THRESHOLD)
-            wait(UPDATE_INTERVAL)
         end
-    end)
-end
-
---------------------------------------------------------------------------------
--- Utility: Restore Hidden Players
---------------------------------------------------------------------------------
-local function restoreHiddenPlayers()
-    local hiddenFolder = ServerStorage:FindFirstChild("HiddenPlayers")
-    if hiddenFolder then
-        for _, char in ipairs(hiddenFolder:GetChildren()) do
-            char.Parent = Workspace
-        end
+        wait(UPDATE_INTERVAL)
     end
-end
+end)
 
 --------------------------------------------------------------------------------
 -- Palm Trees Restore Utility
@@ -449,15 +415,12 @@ local function MapOn()
         warn("[MapOn] No valid court found (no players or no bounding box?). All courts unloaded.")
     end
     mapUnloaded = true
-    -- Start the player-hiding task now that the map is on.
-    startPlayerHidingLoop()
 end
 
 local function MapOff()
     restoreAllUnloaded()
     restorePalmTrees()
-    restoreHiddenPlayers()  -- Ensure that hidden players are restored
-
+    
     -- Remove any Expansions folders from all courts.
     local courtsFolder = safeFindChild(Workspace, "Courts")
     if courtsFolder then
@@ -468,7 +431,7 @@ local function MapOff()
             end
         end
     end
-
+    
     mapUnloaded = false
 end
 
